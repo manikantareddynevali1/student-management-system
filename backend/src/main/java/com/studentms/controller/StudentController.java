@@ -10,6 +10,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.security.access.prepost.PreAuthorize;
 
 import java.util.UUID;
 
@@ -21,16 +22,19 @@ public class StudentController {
     private final StudentService studentService;
 
     @PostMapping
+    @PreAuthorize("hasAuthority('ADMIN') or hasAuthority('FACULTY')")
     public ResponseEntity<StudentDto> createStudent(@Valid @RequestBody StudentDto studentDto) {
         return ResponseEntity.ok(studentService.createStudent(studentDto));
     }
 
     @PutMapping("/{id}")
+    @PreAuthorize("hasAuthority('ADMIN') or hasAuthority('FACULTY')")
     public ResponseEntity<StudentDto> updateStudent(@PathVariable UUID id, @Valid @RequestBody StudentDto studentDto) {
         return ResponseEntity.ok(studentService.updateStudent(id, studentDto));
     }
 
     @DeleteMapping("/{id}")
+    @PreAuthorize("hasAuthority('ADMIN')")
     public ResponseEntity<Void> deleteStudent(@PathVariable UUID id) {
         studentService.deleteStudent(id);
         return ResponseEntity.noContent().build();

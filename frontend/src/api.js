@@ -8,6 +8,8 @@ function saveTokens(tokens) {
   refreshToken = tokens.refreshToken
   sessionStorage.setItem('accessToken', accessToken)
   sessionStorage.setItem('refreshToken', refreshToken)
+  sessionStorage.setItem('role', tokens.role || '')
+  sessionStorage.setItem('username', tokens.username || '')
 }
 
 export function clearTokens() {
@@ -15,6 +17,8 @@ export function clearTokens() {
   refreshToken = null
   sessionStorage.removeItem('accessToken')
   sessionStorage.removeItem('refreshToken')
+  sessionStorage.removeItem('role')
+  sessionStorage.removeItem('username')
 }
 
 async function request(path, options = {}, retry = true) {
@@ -50,6 +54,7 @@ export async function register(details) {
 }
 
 export function hasSession() { return Boolean(accessToken) }
+export function getRole() { return sessionStorage.getItem('role') || '' }
 export function getStudents(params) { return request(`/api/students?${new URLSearchParams(params)}`) }
 export function createStudent(student) { return request('/api/students', { method: 'POST', body: JSON.stringify(student) }) }
 export function updateStudent(id, student) { return request(`/api/students/${id}`, { method: 'PUT', body: JSON.stringify(student) }) }

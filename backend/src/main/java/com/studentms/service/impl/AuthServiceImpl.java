@@ -48,7 +48,7 @@ public class AuthServiceImpl implements AuthService {
         String token = jwtTokenProvider.generateToken(authentication);
         String refreshToken = saveRefreshToken(user);
 
-        return new AuthResponse(token, refreshToken);
+        return new AuthResponse(token, refreshToken, user.getUsername(), user.getRole().getName());
     }
 
     @Override
@@ -79,7 +79,7 @@ public class AuthServiceImpl implements AuthService {
         String token = jwtTokenProvider.generateTokenWithUsername(user.getUsername());
         String refreshToken = saveRefreshToken(user);
 
-        return new AuthResponse(token, refreshToken);
+        return new AuthResponse(token, refreshToken, user.getUsername(), user.getRole().getName());
     }
 
     private String saveRefreshToken(User user) {

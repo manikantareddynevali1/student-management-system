@@ -3,9 +3,9 @@ server:
 
 spring:
   datasource:
-    url: ${DB_URL}
-    username: ${DB_USERNAME}
-    password: ${DB_PASSWORD}
+    url: jdbc:postgresql://aws-0-ap-southeast-2.pooler.supabase.com:5432/postgres?sslmode=require
+    username: postgres.zyzdoemrclmwbfhptubg
+    password: +H4cn2*Z%ZmCrQm
     driver-class-name: org.postgresql.Driver
     hikari:
         connection-timeout: 10000
