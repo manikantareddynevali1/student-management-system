@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: student-management-api
+    runtime: docker
+    rootDir: backend
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /swagger-ui.html
+    envVars:
+      - key: DB_URL
+        sync: false
+      - key: DB_USERNAME
+        sync: false
+      - key: DB_PASSWORD
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
