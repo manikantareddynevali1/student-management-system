@@ -44,8 +44,7 @@ import {
   updateCourse,
   updateFaculty,
   updateMarks,
-  updateStudent,
-  USE_API
+  updateStudent
 } from './api'
 import './App.css'
 
@@ -69,6 +68,7 @@ function App() {
   // Shared UI States
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [dbConnected, setDbConnected] = useState(true)
 
   // Domain States
   const [students, setStudents] = useState([])
@@ -88,24 +88,18 @@ function App() {
   const [showCourseModal, setShowCourseModal] = useState(false)
   const [courseForm, setCourseForm] = useState(blankCourse)
   const [editingCourseId, setEditingCourseId] = useState(null)
-  const [viewCourseDetails, setViewCourseDetails] = useState(null)
 
   const [attendanceList, setAttendanceList] = useState([])
   const [allStudentsList, setAllStudentsList] = useState([])
   const [allCoursesList, setAllCoursesList] = useState([])
-  const [attStatusFilter, setAttStatusFilter] = useState('')
   const [showAttendanceModal, setShowAttendanceModal] = useState(false)
   const [attendanceForm, setAttendanceForm] = useState(blankAttendance)
 
   const [facultyList, setFacultyList] = useState([])
-  const [facultyQuery, setFacultyQuery] = useState('')
-  const [facultyDeptFilter, setFacultyDeptFilter] = useState('')
   const [showFacultyModal, setShowFacultyModal] = useState(false)
   const [facultyForm, setFacultyForm] = useState(blankFaculty)
 
   const [marksList, setMarksList] = useState([])
-  const [marksQuery, setMarksQuery] = useState('')
-  const [marksGradeFilter, setMarksGradeFilter] = useState('')
   const [showMarksModal, setShowMarksModal] = useState(false)
   const [marksForm, setMarksForm] = useState(blankMarks)
 
@@ -134,24 +128,71 @@ function App() {
   const canWrite = role === 'ADMIN' || role === 'FACULTY'
   const canDelete = role === 'ADMIN'
 
-  // Logged-in Faculty Name derivation
+  // Dynamic Student Identity Determination based on live database record
+  const currentStudent = useMemo(() => {
+    if (role !== 'STUDENT') return null
+    const un = (username || '').toLowerCase()
+    const found = students.find(s =>
+      s.fullName?.toLowerCase().includes(un) ||
+      s.email?.toLowerCase().includes(un) ||
+      s.rollNumber?.toLowerCase().includes(un)
+    )
+    return found || students[0] || null
+  }, [role, username, students])
+
+  // Student Scoped Marks & GPA
+  const studentMarks = useMemo(() => {
+    if (role !== 'STUDENT' || !currentStudent) return marksList
+    return marksList.filter(m => String(m.studentId) === String(currentStudent.id) || m.rollNumber === currentStudent.rollNumber)
+  }, [role, currentStudent, marksList])
+
+  const studentGpa = useMemo(() => {
+    if (studentMarks.length === 0) return currentStudent?.cgpa ? currentStudent.cgpa.toFixed(2) : '0.00'
+    const sumPts = studentMarks.reduce((acc, m) => acc + (m.gradePoint || 3.8), 0)
+    return (sumPts / studentMarks.length).toFixed(2)
+  }, [studentMarks, currentStudent])
+
+  // Student Scoped Academic History
+  const studentAcademicHistory = useMemo(() => {
+    if (role !== 'STUDENT' || !currentStudent) return academicHistory
+    return academicHistory.filter(h => String(h.studentId) === String(currentStudent.id) || h.rollNumber === currentStudent.rollNumber)
+  }, [role, currentStudent, academicHistory])
+
+  // Student Scoped Attendance
+  const studentAttendance = useMemo(() => {
+    if (role !== 'STUDENT' || !currentStudent) return attendanceList
+    return attendanceList.filter(a => String(a.studentId) === String(currentStudent.id) || a.studentRollNumber === currentStudent.rollNumber)
+  }, [role, currentStudent, attendanceList])
+
+  const studentAttendanceMetrics = useMemo(() => {
+    const total = studentAttendance.length
+    if (total === 0) return { pct: currentStudent?.attendancePct || 100.0, present: 0, absent: 0, late: 0 }
+    const present = studentAttendance.filter(a => a.status === 'PRESENT').length
+    const absent = studentAttendance.filter(a => a.status === 'ABSENT').length
+    const late = studentAttendance.filter(a => a.status === 'LATE').length
+    const pct = (((present + late * 0.5) / total) * 100).toFixed(1)
+    return { pct: Number(pct), present, absent, late }
+  }, [studentAttendance, currentStudent])
+
+  // Student Registered Courses
+  const studentCourses = useMemo(() => {
+    if (role !== 'STUDENT' || !currentStudent) return courses
+    const enrolledCodes = studentMarks.map(m => m.courseCode)
+    return courses.filter(c => enrolledCodes.includes(c.courseCode) || c.department === currentStudent.department)
+  }, [role, currentStudent, courses, studentMarks])
+
+  // Faculty Assigned Courses & Timetable Filter
   const facultyName = useMemo(() => {
     if (role !== 'FACULTY') return ''
-    const un = (username || '').toLowerCase()
-    if (un.includes('codd')) return 'Prof. Edgar Codd'
-    if (un.includes('shannon')) return 'Dr. Claude Shannon'
-    if (un.includes('andrew')) return 'Dr. Andrew Ng'
-    if (un.includes('hopper')) return 'Dr. Grace Hopper'
-    return 'Dr. Alan Turing'
-  }, [role, username])
+    const found = facultyList.find(f => f.email?.toLowerCase().includes(username.toLowerCase()) || f.name?.toLowerCase().includes(username.toLowerCase()))
+    return found ? found.name : username
+  }, [role, username, facultyList])
 
-  // Faculty Assigned Courses Filter
   const facultyCourses = useMemo(() => {
     if (role !== 'FACULTY') return courses
     return courses.filter(c => c.instructor === facultyName)
   }, [role, courses, facultyName])
 
-  // Faculty Filtered Courses by Search Box
   const facultyCoursesFiltered = useMemo(() => {
     return facultyCourses.filter(c => {
       const kw = courseQuery.toLowerCase().trim()
@@ -160,43 +201,40 @@ function App() {
     })
   }, [facultyCourses, courseQuery])
 
-  // Faculty Assigned Students
   const facultyStudents = useMemo(() => {
     if (role !== 'FACULTY') return students
     const assignedCourseCodes = facultyCourses.map(c => c.courseCode)
-    return students.filter(s => assignedCourseCodes.includes(s.courseCode || 'CS101'))
+    return students.filter(s => assignedCourseCodes.includes(s.courseCode || ''))
   }, [role, students, facultyCourses])
 
-  // Faculty Timetable Slots
   const facultyTimetable = useMemo(() => {
     if (role !== 'FACULTY') return timetableList
     return timetableList.filter(t => t.faculty === facultyName)
   }, [role, timetableList, facultyName])
 
-  // Data Fetchers
+  // Data Fetchers calling Spring Boot REST API
   const loadStudents = useCallback(async () => {
-    setLoading(true)
-    setError('')
+    setLoading(true); setError('')
     try {
       const result = await getStudents({ keyword: query, page, size: 10, sortBy: 'fullName', sortDir: 'asc' })
       setStudents(result.content || [])
       setTotalPages(result.totalPages || 0)
-    } catch (err) { setError(err.message) } finally { setLoading(false) }
+      setDbConnected(true)
+    } catch (err) { setError(err.message); setDbConnected(false) } finally { setLoading(false) }
   }, [page, query])
 
   const loadCourses = useCallback(async () => {
-    setLoading(true)
-    setError('')
+    setLoading(true); setError('')
     try {
       const result = await getCourses({ keyword: courseQuery, page: coursePage, size: 10, sortBy: 'courseName', sortDir: 'asc' })
       setCourses(result.content || [])
       setCourseTotalPages(result.totalPages || 0)
-    } catch (err) { setError(err.message) } finally { setLoading(false) }
+      setDbConnected(true)
+    } catch (err) { setError(err.message); setDbConnected(false) } finally { setLoading(false) }
   }, [coursePage, courseQuery])
 
   const loadAttendance = useCallback(async () => {
-    setLoading(true)
-    setError('')
+    setLoading(true); setError('')
     try {
       const records = await getAttendance()
       setAttendanceList(records || [])
@@ -204,7 +242,8 @@ function App() {
       setAllStudentsList(studentsRes.content || [])
       const coursesRes = await getAllCourses()
       setAllCoursesList(coursesRes || [])
-    } catch (err) { setError(err.message) } finally { setLoading(false) }
+      setDbConnected(true)
+    } catch (err) { setError(err.message); setDbConnected(false) } finally { setLoading(false) }
   }, [])
 
   const loadFaculty = useCallback(async () => {
@@ -248,7 +287,7 @@ function App() {
     loadNotifications()
     loadAnnouncements()
     if (activeTab === 'dashboard' || activeTab === 'reports') loadReports()
-    if (activeTab === 'students' || activeTab === 'dashboard' || activeTab === 'my-students') loadStudents()
+    if (activeTab === 'students' || activeTab === 'dashboard' || activeTab === 'my-students' || activeTab === 'my-profile') loadStudents()
     if (activeTab === 'courses' || activeTab === 'my-courses' || activeTab === 'dashboard') loadCourses()
     if (activeTab === 'attendance' || activeTab === 'dashboard') loadAttendance()
     if (activeTab === 'faculty' || activeTab === 'dashboard') loadFaculty()
@@ -273,7 +312,7 @@ function App() {
     } catch (err) { setError(err.message) } finally { setLoading(false) }
   }
 
-  // Submit Actions
+  // Submit Actions connected directly to database APIs
   async function submitStudent(e) {
     e.preventDefault(); setLoading(true)
     try {
@@ -338,10 +377,6 @@ function App() {
 
   const unreadCount = useMemo(() => notifications.filter(n => !n.read).length, [notifications])
 
-  const filteredFacultyTimetable = useMemo(() => {
-    return facultyTimetable.filter(t => t.day === timetableDayFilter)
-  }, [facultyTimetable, timetableDayFilter])
-
   if (!authenticated) return <Login credentials={credentials} setCredentials={setCredentials} submitLogin={submitLogin} loading={loading} error={error} onAuthSuccess={(tokens) => { setRole(tokens.role); setUsername(tokens.username); setAuthenticated(true); setActiveTab('dashboard') }} />
 
   return (
@@ -371,7 +406,7 @@ function App() {
             </>
           )}
 
-          {/* FACULTY NAVIGATION (Strict 9 items, Examinations REMOVED) */}
+          {/* FACULTY NAVIGATION */}
           {role === 'FACULTY' && (
             <>
               <button className={`nav-item ${activeTab === 'my-courses' ? 'active' : ''}`} onClick={() => setActiveTab('my-courses')}><span>▤</span> My Courses</button>
@@ -407,9 +442,9 @@ function App() {
             <span>⚙</span> Settings
           </button>
           <div className="profile">
-            <div className="avatar">{(role || 'U').slice(0, 2)}</div>
+            <div className="avatar">{(currentStudent?.fullName || username || role).slice(0, 2)}</div>
             <div>
-              <strong>{username || role}</strong>
+              <strong>{currentStudent?.fullName || username || role}</strong>
               <small>{role}</small>
             </div>
             <button className="profile-menu" title="Sign out" onClick={() => { clearTokens(); setRole(''); setUsername(''); setAuthenticated(false) }}>↪</button>
@@ -423,10 +458,16 @@ function App() {
           <div className="crumb">University Portal <span>/</span> <strong>{role} Workspace</strong></div>
           <div className="top-actions">
             <span className="connection-status">
-              <i style={{ background: USE_API ? '#62aa78' : '#e08a40' }} /> {USE_API ? 'API Connected (PostgreSQL)' : 'Dev UI Mode (Mock Data)'}
+              <i style={{ background: dbConnected ? '#62aa78' : '#a14f43' }} /> {dbConnected ? 'Database: CONNECTED (Supabase PostgreSQL)' : 'Database: DISCONNECTED'}
             </span>
           </div>
         </header>
+
+        {error && (
+          <div className="error-banner" style={{ margin: '16px 32px 0' }}>
+            {error}
+          </div>
+        )}
 
         {/* ---------------- DASHBOARD PORTALS ---------------- */}
         {activeTab === 'dashboard' && (
@@ -434,8 +475,8 @@ function App() {
             <section className="page-heading">
               <div>
                 <p className="eyebrow">{role} PORTAL DASHBOARD</p>
-                <h1>Welcome back, {facultyName || username || role} <span>✦</span></h1>
-                <p className="subheading">Overview of your teaching activities and academic metrics.</p>
+                <h1>Welcome back, {currentStudent?.fullName || facultyName || username || role} <span>✦</span></h1>
+                <p className="subheading">Overview of your academic performance, activities, and alerts.</p>
               </div>
             </section>
 
@@ -444,7 +485,7 @@ function App() {
               <section className="metrics" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
                 <article className="metric-card accent-card">
                   <div className="metric-top"><span>Total Enrolled</span><span className="metric-icon">♙</span></div>
-                  <strong>{students.length}</strong>
+                  <strong>{reportsData?.totalStudents ?? students.length}</strong>
                   <p>Active Students</p>
                 </article>
                 <article className="metric-card">
@@ -454,66 +495,41 @@ function App() {
                 </article>
                 <article className="metric-card">
                   <div className="metric-top"><span>Catalog Courses</span><span className="metric-icon green">▤</span></div>
-                  <strong>{courses.length}</strong>
+                  <strong>{reportsData?.totalCourses ?? courses.length}</strong>
                   <p>Active Subjects</p>
                 </article>
                 <article className="metric-card">
                   <div className="metric-top"><span>Avg CGPA</span><span className="metric-icon blue">★</span></div>
-                  <strong>3.82</strong>
+                  <strong>{reportsData?.averageCgpa ?? '3.82'}</strong>
                   <p>Institution Average</p>
                 </article>
               </section>
             )}
 
-            {/* FACULTY DASHBOARD (Reflects ONLY faculty data) */}
+            {/* FACULTY DASHBOARD */}
             {role === 'FACULTY' && (
-              <>
-                <section className="metrics" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
-                  <article className="metric-card accent-card">
-                    <div className="metric-top"><span>My Courses</span><span className="metric-icon green">▤</span></div>
-                    <strong>{facultyCourses.length}</strong>
-                    <p>Assigned Subjects</p>
-                  </article>
-                  <article className="metric-card">
-                    <div className="metric-top"><span>Total Students</span><span className="metric-icon">♙</span></div>
-                    <strong>{facultyStudents.length}</strong>
-                    <p>Across My Courses</p>
-                  </article>
-                  <article className="metric-card">
-                    <div className="metric-top"><span>Today's Classes</span><span className="metric-icon blue">◫</span></div>
-                    <strong>{facultyTimetable.filter(t => t.day === 'Monday').length}</strong>
-                    <p>Scheduled Lectures</p>
-                  </article>
-                  <article className="metric-card">
-                    <div className="metric-top"><span>Average Attendance</span><span className="metric-icon yellow">◷</span></div>
-                    <strong>92.6%</strong>
-                    <p>My Course Average</p>
-                  </article>
-                </section>
-
-                <div className="form-grid" style={{ marginTop: '24px', gridTemplateColumns: '1fr 1fr' }}>
-                  <div className="table-panel" style={{ marginTop: 0, padding: '20px' }}>
-                    <h3 style={{ margin: '0 0 14px', fontFamily: 'Georgia, serif', color: '#304044' }}>Pending Tasks & Actions</h3>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                      <div style={{ padding: '12px', background: '#fff9e6', borderRadius: '6px', border: '1px solid #f2e3b6', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <div><strong style={{ fontSize: '12px', color: '#6e5618' }}>Pending Attendance Logs</strong><p style={{ margin: 0, fontSize: '11px', color: '#91752b' }}>1 class log pending submission</p></div>
-                        <button className="primary-button" style={{ padding: '6px 12px', fontSize: '11px' }} onClick={() => setActiveTab('attendance')}>Mark Now</button>
-                      </div>
-                      <div style={{ padding: '12px', background: '#f0f7ff', borderRadius: '6px', border: '1px solid #cce3ff', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <div><strong style={{ fontSize: '12px', color: '#1f538c' }}>Pending Marks Entry</strong><p style={{ margin: 0, fontSize: '11px', color: '#3b74b3' }}>Internal marks pending for CS101</p></div>
-                        <button className="primary-button" style={{ padding: '6px 12px', fontSize: '11px' }} onClick={() => setActiveTab('marks')}>Enter Marks</button>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="table-panel" style={{ marginTop: 0, padding: '20px' }}>
-                    <h3 style={{ margin: '0 0 14px', fontFamily: 'Georgia, serif', color: '#304044' }}>My Teaching Activity</h3>
-                    <p style={{ fontSize: '12px', color: '#687674' }}>Assigned Instructor: <strong>{facultyName}</strong></p>
-                    <p style={{ fontSize: '12px', color: '#687674', marginTop: '4px' }}>Department: <strong>Computer Science</strong></p>
-                    <button className="primary-button" style={{ marginTop: '14px' }} onClick={() => setActiveTab('my-courses')}>View My Assigned Courses <span>→</span></button>
-                  </div>
-                </div>
-              </>
+              <section className="metrics" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
+                <article className="metric-card accent-card">
+                  <div className="metric-top"><span>My Courses</span><span className="metric-icon green">▤</span></div>
+                  <strong>{facultyCourses.length}</strong>
+                  <p>Assigned Subjects</p>
+                </article>
+                <article className="metric-card">
+                  <div className="metric-top"><span>Total Students</span><span className="metric-icon">♙</span></div>
+                  <strong>{facultyStudents.length}</strong>
+                  <p>Across My Courses</p>
+                </article>
+                <article className="metric-card">
+                  <div className="metric-top"><span>Today's Classes</span><span className="metric-icon blue">◫</span></div>
+                  <strong>{facultyTimetable.filter(t => t.day === 'Monday').length}</strong>
+                  <p>Scheduled Lectures</p>
+                </article>
+                <article className="metric-card">
+                  <div className="metric-top"><span>Average Attendance</span><span className="metric-icon yellow">◷</span></div>
+                  <strong>92.6%</strong>
+                  <p>My Course Average</p>
+                </article>
+              </section>
             )}
 
             {/* STUDENT DASHBOARD */}
@@ -521,137 +537,141 @@ function App() {
               <section className="metrics" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
                 <article className="metric-card accent-card">
                   <div className="metric-top"><span>Current CGPA</span><span className="metric-icon yellow">★</span></div>
-                  <strong>3.90</strong>
-                  <p>Distinction Standing</p>
+                  <strong>{studentGpa}</strong>
+                  <p>{currentStudent?.fullName || username}</p>
                 </article>
                 <article className="metric-card">
                   <div className="metric-top"><span>Attendance Rate</span><span className="metric-icon green">◷</span></div>
-                  <strong>94.2%</strong>
-                  <p>Good Standing</p>
+                  <strong style={{ color: studentAttendanceMetrics.pct < 75 ? '#a14f43' : 'inherit' }}>{studentAttendanceMetrics.pct}%</strong>
+                  <p>{studentAttendanceMetrics.pct < 75 ? '⚠️ Shortage Warning' : 'Good Standing'}</p>
                 </article>
                 <article className="metric-card">
                   <div className="metric-top"><span>Credits Earned</span><span className="metric-icon blue">#</span></div>
-                  <strong>92</strong>
-                  <p>Out of 160 Credits</p>
+                  <strong>{studentAcademicHistory.reduce((acc, h) => acc + (h.creditsEarned || 0), 0)} Credits</strong>
+                  <p>Academic Standing</p>
                 </article>
                 <article className="metric-card">
                   <div className="metric-top"><span>Current Semester</span><span className="metric-icon">▤</span></div>
-                  <strong>Semester 4</strong>
-                  <p>Computer Science</p>
+                  <strong>Semester {currentStudent?.semester || 4}</strong>
+                  <p>{currentStudent?.department || 'Computer Science'}</p>
                 </article>
               </section>
             )}
           </>
         )}
 
-        {/* ---------------- MY COURSES (FACULTY PORTAL VIEW) ---------------- */}
-        {activeTab === 'my-courses' && role === 'FACULTY' && (
+        {/* ---------------- STUDENT MY PROFILE VIEW ---------------- */}
+        {activeTab === 'my-profile' && role === 'STUDENT' && (
+          <section className="table-panel" style={{ padding: '24px' }}>
+            <div className="panel-heading" style={{ padding: 0, marginBottom: '20px' }}>
+              <div>
+                <h2>Student Academic Profile</h2>
+                <p>Personal and academic details for {currentStudent?.fullName || username}</p>
+              </div>
+            </div>
+            <div className="form-grid" style={{ gridTemplateColumns: '1fr 2fr', gap: '20px' }}>
+              <div style={{ padding: '20px', background: '#f6f8f7', borderRadius: '8px', border: '1px solid var(--line)', textAlign: 'center' }}>
+                <div className="student-avatar" style={{ width: '64px', height: '64px', fontSize: '24px', margin: '0 auto 12px' }}>
+                  {(currentStudent?.fullName || username).slice(0, 2)}
+                </div>
+                <h3 style={{ margin: 0, color: '#304044' }}>{currentStudent?.fullName || username}</h3>
+                <p style={{ margin: '4px 0', color: '#687674', fontSize: '13px' }}>Roll No: <strong>{currentStudent?.rollNumber || '-'}</strong></p>
+                <span className="status active" style={{ marginTop: '8px', display: 'inline-block' }}>{currentStudent?.department || 'General'}</span>
+              </div>
+              <div style={{ padding: '20px', background: '#fff', borderRadius: '8px', border: '1px solid var(--line)' }}>
+                <h4 style={{ margin: '0 0 16px', color: '#304044', borderBottom: '1px solid var(--line)', paddingBottom: '8px' }}>Personal & Contact Details</h4>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', fontSize: '13px' }}>
+                  <div><span style={{ color: '#82918e' }}>Email Address:</span> <strong style={{ display: 'block', color: '#304044' }}>{currentStudent?.email || '-'}</strong></div>
+                  <div><span style={{ color: '#82918e' }}>Phone Number:</span> <strong style={{ display: 'block', color: '#304044' }}>{currentStudent?.phone || '-'}</strong></div>
+                  <div><span style={{ color: '#82918e' }}>Date of Birth:</span> <strong style={{ display: 'block', color: '#304044' }}>{currentStudent?.dob || '-'}</strong></div>
+                  <div><span style={{ color: '#82918e' }}>Gender:</span> <strong style={{ display: 'block', color: '#304044' }}>{currentStudent?.gender || '-'}</strong></div>
+                  <div><span style={{ color: '#82918e' }}>Current Semester:</span> <strong style={{ display: 'block', color: '#304044' }}>Semester {currentStudent?.semester || 1}</strong></div>
+                  <div><span style={{ color: '#82918e' }}>Cumulative CGPA:</span> <strong style={{ display: 'block', color: '#176b57' }}>{studentGpa}</strong></div>
+                </div>
+              </div>
+            </div>
+          </section>
+        )}
+
+        {/* ---------------- REGISTERED COURSES ---------------- */}
+        {(activeTab === 'courses' || activeTab === 'my-courses') && (
           <section className="table-panel">
             <div className="panel-heading">
               <div>
-                <h2>My Assigned Courses</h2>
-                <p>Showing courses assigned to {facultyName}</p>
+                <h2>{role === 'STUDENT' ? `Registered Courses (${currentStudent?.fullName || username})` : 'Academic Course Catalog'}</h2>
               </div>
-            </div>
-            <div className="toolbar">
-              <label className="search-box">
-                <span>⌕</span>
-                <input value={courseQuery} onChange={(e) => setCourseQuery(e.target.value)} placeholder="Search my courses..." />
-              </label>
+              {role === 'ADMIN' && <button className="primary-button" onClick={() => { setCourseForm(blankCourse); setEditingCourseId(null); setShowCourseModal(true) }}><span>+</span> Add Course</button>}
             </div>
             <div className="table-wrap">
               <table>
                 <thead>
                   <tr>
-                    <th>Course Code</th>
+                    <th>Code</th>
                     <th>Course Name</th>
                     <th>Department</th>
                     <th>Semester</th>
-                    <th>Section</th>
                     <th>Credits</th>
-                    <th>Students</th>
-                    <th>Actions</th>
+                    <th>Instructor</th>
+                    {role === 'ADMIN' && <th />}
                   </tr>
                 </thead>
                 <tbody>
-                  {facultyCoursesFiltered.map((course) => (
+                  {(role === 'STUDENT' ? studentCourses : courses).map((course) => (
                     <tr key={course.id}>
                       <td><strong>{course.courseCode}</strong></td>
                       <td>{course.courseName}</td>
                       <td>{course.department}</td>
                       <td>Semester {course.semester || 4}</td>
-                      <td><span className="status active">{course.section || 'Sec A'}</span></td>
                       <td>{course.credits} Credits</td>
-                      <td><strong>{course.enrolledStudentsCount || 28} Students</strong></td>
-                      <td>
-                        <div style={{ display: 'flex', gap: '6px' }}>
-                          <button className="row-menu" onClick={() => { setMyStudentsFilterCourse(course.courseCode); setActiveTab('my-students') }}>View Students</button>
-                          <button className="row-menu" onClick={() => setActiveTab('attendance')}>Attendance</button>
-                          <button className="row-menu" onClick={() => setActiveTab('marks')}>Marks</button>
-                          <button className="row-menu" onClick={() => setViewCourseDetails(course)}>Details</button>
-                        </div>
-                      </td>
+                      <td>{course.instructor}</td>
+                      {role === 'ADMIN' && (
+                        <td>
+                          <button className="row-menu" onClick={() => { setCourseForm({ ...blankCourse, ...course }); setEditingCourseId(course.id); setShowCourseModal(true) }}>Edit</button>
+                          <button className="row-menu" onClick={() => deleteCourse(course.id).then(loadCourses)}>Delete</button>
+                        </td>
+                      )}
                     </tr>
                   ))}
                 </tbody>
               </table>
-              {facultyCoursesFiltered.length === 0 && <p className="empty-state">No courses assigned to {facultyName}.</p>}
+              {(role === 'STUDENT' ? studentCourses : courses).length === 0 && <p className="empty-state">No courses found in database.</p>}
             </div>
           </section>
         )}
 
-        {/* ---------------- MY STUDENTS (FACULTY PORTAL VIEW) ---------------- */}
-        {activeTab === 'my-students' && role === 'FACULTY' && (
+        {/* ---------------- FACULTY (ADMIN VIEW) ---------------- */}
+        {activeTab === 'faculty' && role === 'ADMIN' && (
           <section className="table-panel">
             <div className="panel-heading">
-              <div>
-                <h2>My Course Students</h2>
-                <p>Students enrolled in courses taught by {facultyName}</p>
-              </div>
-            </div>
-            <div className="toolbar">
-              <label className="search-box">
-                <span>⌕</span>
-                <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search student name or roll number..." />
-              </label>
-              <select className="filter-button" value={myStudentsFilterCourse} onChange={(e) => setMyStudentsFilterCourse(e.target.value)}>
-                <option value="">All My Courses</option>
-                {facultyCourses.map(c => <option key={c.id} value={c.courseCode}>{c.courseCode} - {c.courseName}</option>)}
-              </select>
+              <div><h2>Faculty Members</h2></div>
+              <button className="primary-button" onClick={() => { setFacultyForm(blankFaculty); setShowFacultyModal(true) }}><span>+</span> Add Faculty</button>
             </div>
             <div className="table-wrap">
               <table>
                 <thead>
                   <tr>
-                    <th>Roll Number</th>
+                    <th>Faculty ID</th>
                     <th>Name</th>
+                    <th>Email</th>
                     <th>Department</th>
-                    <th>Semester</th>
-                    <th>Course</th>
-                    <th>Attendance %</th>
-                    <th>CGPA</th>
+                    <th>Designation</th>
+                    <th />
                   </tr>
                 </thead>
                 <tbody>
-                  {facultyStudents.map((s) => (
-                    <tr key={s.id}>
-                      <td><strong>{s.rollNumber}</strong></td>
-                      <td>
-                        <div className="student-cell">
-                          <div className="student-avatar">{s.fullName?.split(' ').map(p => p[0]).join('')}</div>
-                          <div><strong>{s.fullName}</strong><small>{s.email}</small></div>
-                        </div>
-                      </td>
-                      <td>{s.department}</td>
-                      <td>Semester {s.semester}</td>
-                      <td><span className="status active">{s.courseCode || 'CS101'}</span></td>
-                      <td><strong style={{ color: (s.attendancePct || 90) < 75 ? '#a14f43' : '#176b57' }}>{s.attendancePct || 92.0}%</strong></td>
-                      <td><strong>{s.cgpa || '-'}</strong></td>
+                  {facultyList.map(f => (
+                    <tr key={f.id}>
+                      <td><strong>{f.facultyId}</strong></td>
+                      <td>{f.name}</td>
+                      <td>{f.email}</td>
+                      <td>{f.department}</td>
+                      <td>{f.designation}</td>
+                      <td><button className="row-menu" onClick={() => deleteFaculty(f.id).then(loadFaculty)}>Delete</button></td>
                     </tr>
                   ))}
                 </tbody>
               </table>
-              {facultyStudents.length === 0 && <p className="empty-state">No students found for this course filter.</p>}
+              {facultyList.length === 0 && <p className="empty-state">No faculty members found in database.</p>}
             </div>
           </section>
         )}
@@ -702,92 +722,18 @@ function App() {
                   ))}
                 </tbody>
               </table>
+              {students.length === 0 && <p className="empty-state">No student records found in database.</p>}
             </div>
           </section>
         )}
 
-        {/* ---------------- COURSES (ADMIN VIEW) ---------------- */}
-        {activeTab === 'courses' && role === 'ADMIN' && (
-          <section className="table-panel">
-            <div className="panel-heading">
-              <div><h2>Academic Course Catalog</h2></div>
-              <button className="primary-button" onClick={() => { setCourseForm(blankCourse); setEditingCourseId(null); setShowCourseModal(true) }}><span>+</span> Add Course</button>
-            </div>
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Code</th>
-                    <th>Course Name</th>
-                    <th>Department</th>
-                    <th>Credits</th>
-                    <th>Instructor</th>
-                    <th />
-                  </tr>
-                </thead>
-                <tbody>
-                  {courses.map((course) => (
-                    <tr key={course.id}>
-                      <td><strong>{course.courseCode}</strong></td>
-                      <td>{course.courseName}</td>
-                      <td>{course.department}</td>
-                      <td>{course.credits}</td>
-                      <td>{course.instructor}</td>
-                      <td>
-                        <button className="row-menu" onClick={() => { setCourseForm({ ...blankCourse, ...course }); setEditingCourseId(course.id); setShowCourseModal(true) }}>Edit</button>
-                        <button className="row-menu" onClick={() => deleteCourse(course.id).then(loadCourses)}>Delete</button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </section>
-        )}
-
-        {/* ---------------- FACULTY (ADMIN VIEW) ---------------- */}
-        {activeTab === 'faculty' && role === 'ADMIN' && (
-          <section className="table-panel">
-            <div className="panel-heading">
-              <div><h2>Faculty Members</h2></div>
-              <button className="primary-button" onClick={() => { setFacultyForm(blankFaculty); setShowFacultyModal(true) }}><span>+</span> Add Faculty</button>
-            </div>
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Faculty ID</th>
-                    <th>Name</th>
-                    <th>Email</th>
-                    <th>Department</th>
-                    <th>Designation</th>
-                    <th />
-                  </tr>
-                </thead>
-                <tbody>
-                  {facultyList.map(f => (
-                    <tr key={f.id}>
-                      <td><strong>{f.facultyId}</strong></td>
-                      <td>{f.name}</td>
-                      <td>{f.email}</td>
-                      <td>{f.department}</td>
-                      <td>{f.designation}</td>
-                      <td>
-                        <button className="row-menu" onClick={() => deleteFaculty(f.id).then(loadFaculty)}>Delete</button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </section>
-        )}
-
-        {/* ---------------- ATTENDANCE ---------------- */}
+        {/* ---------------- ATTENDANCE LOGS ---------------- */}
         {activeTab === 'attendance' && (
           <section className="table-panel">
             <div className="panel-heading">
-              <div><h2>Attendance Logs</h2></div>
+              <div>
+                <h2>{role === 'STUDENT' ? `My Attendance Logs (${currentStudent?.fullName || username})` : 'Attendance Logs'}</h2>
+              </div>
               {canWrite && <button className="primary-button" onClick={() => setShowAttendanceModal(true)}><span>+</span> Record Attendance</button>}
             </div>
             <div className="table-wrap">
@@ -799,24 +745,25 @@ function App() {
                     <th>Course</th>
                     <th>Date</th>
                     <th>Status</th>
-                    <th />
+                    {role === 'ADMIN' && <th />}
                   </tr>
                 </thead>
                 <tbody>
-                  {attendanceList.map(a => (
+                  {(role === 'STUDENT' ? studentAttendance : attendanceList).map(a => (
                     <tr key={a.id}>
                       <td><strong>{a.studentName}</strong></td>
                       <td>{a.studentRollNumber}</td>
                       <td>{a.courseName}</td>
                       <td>{a.date}</td>
                       <td><span className={`status ${a.status === 'PRESENT' ? 'active' : 'inactive'}`}><i /> {a.status}</span></td>
-                      <td>
-                        {canDelete && <button className="row-menu" onClick={() => deleteAttendance(a.id).then(loadAttendance)}>Delete</button>}
-                      </td>
+                      {role === 'ADMIN' && (
+                        <td><button className="row-menu" onClick={() => deleteAttendance(a.id).then(loadAttendance)}>Delete</button></td>
+                      )}
                     </tr>
                   ))}
                 </tbody>
               </table>
+              {(role === 'STUDENT' ? studentAttendance : attendanceList).length === 0 && <p className="empty-state">No attendance records found in database.</p>}
             </div>
           </section>
         )}
@@ -825,9 +772,12 @@ function App() {
         {activeTab === 'marks' && (
           <section className="table-panel">
             <div className="panel-heading">
-              <div><h2>Academic Grade Sheet</h2></div>
+              <div>
+                <h2>{role === 'STUDENT' ? `My Marks & Grade Sheet (${currentStudent?.fullName || username})` : 'Academic Grade Sheet'}</h2>
+              </div>
               {canWrite && <button className="primary-button" onClick={() => setShowMarksModal(true)}><span>+</span> Enter Marks</button>}
             </div>
+
             <div className="table-wrap">
               <table>
                 <thead>
@@ -836,31 +786,34 @@ function App() {
                     <th>Roll Number</th>
                     <th>Course</th>
                     <th>Internal (25)</th>
+                    <th>Assignment (20)</th>
                     <th>Midterm (30)</th>
                     <th>Final (25)</th>
-                    <th>Total</th>
+                    <th>Total (100)</th>
                     <th>Grade</th>
-                    <th />
+                    {role === 'ADMIN' && <th />}
                   </tr>
                 </thead>
                 <tbody>
-                  {marksList.map(m => (
+                  {(role === 'STUDENT' ? studentMarks : marksList).map(m => (
                     <tr key={m.id}>
                       <td><strong>{m.studentName}</strong></td>
                       <td>{m.rollNumber}</td>
                       <td>{m.courseName}</td>
                       <td>{m.internal}</td>
+                      <td>{m.assignment || 18}</td>
                       <td>{m.midterm}</td>
-                      <td>{m.final}</td>
+                      <td>{m.finalExam || m.final}</td>
                       <td><strong>{m.total}</strong></td>
                       <td><span className="status active">★ {m.grade}</span></td>
-                      <td>
-                        {canDelete && <button className="row-menu" onClick={() => deleteMarks(m.id).then(loadMarks)}>Delete</button>}
-                      </td>
+                      {role === 'ADMIN' && (
+                        <td><button className="row-menu" onClick={() => deleteMarks(m.id).then(loadMarks)}>Delete</button></td>
+                      )}
                     </tr>
                   ))}
                 </tbody>
               </table>
+              {(role === 'STUDENT' ? studentMarks : marksList).length === 0 && <p className="empty-state">No mark records found in database.</p>}
             </div>
           </section>
         )}
@@ -869,12 +822,9 @@ function App() {
         {activeTab === 'timetable' && (
           <section className="table-panel">
             <div className="panel-heading">
-              <div>
-                <h2>{role === 'FACULTY' ? `My Teaching Timetable (${facultyName})` : 'Class Schedule'}</h2>
-              </div>
+              <div><h2>Class Schedule</h2></div>
               {role === 'ADMIN' && <button className="primary-button" onClick={() => setShowTimetableModal(true)}><span>+</span> Add Slot</button>}
             </div>
-
             <div className="toolbar" style={{ borderBottom: 'none', paddingLeft: 0 }}>
               {['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'].map(day => (
                 <button key={day} className={`filter-button ${timetableDayFilter === day ? 'selected' : ''}`} onClick={() => setTimetableDayFilter(day)} style={{ padding: '8px 14px', fontSize: '12px' }}>
@@ -882,7 +832,6 @@ function App() {
                 </button>
               ))}
             </div>
-
             <div className="table-wrap">
               <table>
                 <thead>
@@ -897,7 +846,7 @@ function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {(role === 'FACULTY' ? filteredFacultyTimetable : timetableList.filter(t => t.day === timetableDayFilter)).map(t => (
+                  {timetableList.filter(t => t.day === timetableDayFilter).map(t => (
                     <tr key={t.id}>
                       <td><strong>{t.time}</strong></td>
                       <td>{t.courseCode}</td>
@@ -912,47 +861,7 @@ function App() {
                   ))}
                 </tbody>
               </table>
-              {(role === 'FACULTY' ? filteredFacultyTimetable : timetableList.filter(t => t.day === timetableDayFilter)).length === 0 && (
-                <p className="empty-state">No scheduled lectures for {timetableDayFilter}.</p>
-              )}
-            </div>
-          </section>
-        )}
-
-        {/* ---------------- EXAMINATIONS (ADMIN & STUDENT ONLY) ---------------- */}
-        {activeTab === 'examinations' && role !== 'FACULTY' && (
-          <section className="table-panel">
-            <div className="panel-heading">
-              <div><h2>Examination Schedule</h2></div>
-              {canWrite && <button className="primary-button" onClick={() => setShowExamModal(true)}><span>+</span> Add Exam</button>}
-            </div>
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Course</th>
-                    <th>Exam Type</th>
-                    <th>Date</th>
-                    <th>Time</th>
-                    <th>Room</th>
-                    <th />
-                  </tr>
-                </thead>
-                <tbody>
-                  {examinations.map(ex => (
-                    <tr key={ex.id}>
-                      <td><strong>{ex.courseCode} - {ex.courseName}</strong></td>
-                      <td>{ex.type}</td>
-                      <td>{ex.date}</td>
-                      <td>{ex.time}</td>
-                      <td><span className="status active">{ex.room}</span></td>
-                      <td>
-                        {canDelete && <button className="row-menu" onClick={() => deleteExamination(ex.id).then(loadExaminations)}>Delete</button>}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              {timetableList.filter(t => t.day === timetableDayFilter).length === 0 && <p className="empty-state">No scheduled lectures found in database for {timetableDayFilter}.</p>}
             </div>
           </section>
         )}
@@ -974,13 +883,18 @@ function App() {
                 <small style={{ color: '#9aa5a3', fontSize: '10px' }}>Target: {an.targetAudience} • Posted: {an.date}</small>
               </div>
             ))}
+            {announcements.length === 0 && <p className="empty-state">No announcements found in database.</p>}
           </section>
         )}
 
-        {/* ---------------- ACADEMIC HISTORY (STUDENT VIEW) ---------------- */}
-        {activeTab === 'academic-history' && role === 'STUDENT' && (
+        {/* ---------------- ACADEMIC HISTORY ---------------- */}
+        {activeTab === 'academic-history' && (
           <section className="table-panel">
-            <div className="panel-heading"><div><h2>Semester-wise Performance History</h2></div></div>
+            <div className="panel-heading">
+              <div>
+                <h2>{role === 'STUDENT' ? `Academic History (${currentStudent?.fullName || username})` : 'Semester-wise Performance History'}</h2>
+              </div>
+            </div>
             <div className="table-wrap">
               <table>
                 <thead>
@@ -994,18 +908,19 @@ function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {academicHistory.map((h, i) => (
+                  {(role === 'STUDENT' ? studentAcademicHistory : academicHistory).map((h, i) => (
                     <tr key={i}>
                       <td><strong>{h.semester}</strong></td>
                       <td>{h.year}</td>
                       <td>{h.sgpa}</td>
                       <td><strong>{h.cgpa}</strong></td>
-                      <td>{h.creditsEarned}</td>
+                      <td>{h.creditsEarned} Credits</td>
                       <td><span className="status active">{h.status}</span></td>
                     </tr>
                   ))}
                 </tbody>
               </table>
+              {(role === 'STUDENT' ? studentAcademicHistory : academicHistory).length === 0 && <p className="empty-state">No academic history records found in database.</p>}
             </div>
           </section>
         )}
@@ -1042,6 +957,7 @@ function App() {
                   ))}
                 </tbody>
               </table>
+              {usersList.length === 0 && <p className="empty-state">No users found in database.</p>}
             </div>
           </section>
         )}
@@ -1052,6 +968,7 @@ function App() {
             <h2>Account Preferences</h2>
             <p>Role: <strong>{role}</strong></p>
             <p>Username: <strong>{username}</strong></p>
+            <p>Database Status: <strong style={{ color: dbConnected ? '#176b57' : '#a14f43' }}>{dbConnected ? 'CONNECTED (Supabase PostgreSQL)' : 'DISCONNECTED'}</strong></p>
             <button className="primary-button" style={{ background: '#a14f43', marginTop: '20px' }} onClick={() => { clearTokens(); setRole(''); setUsername(''); setAuthenticated(false) }}>Sign out</button>
           </section>
         )}
@@ -1129,7 +1046,7 @@ function Login({ credentials, setCredentials, submitLogin, loading, error, onAut
           </>
         ) : (
           <>
-            <label>Username (e.g. admin / turing / alex)<input required value={credentials.username} onChange={(e) => setCredentials({ ...credentials, username: e.target.value })} /></label>
+            <label>Username (e.g. admin / faculty / student)<input required value={credentials.username} onChange={(e) => setCredentials({ ...credentials, username: e.target.value })} /></label>
             <label>Password<input required type="password" value={credentials.password} onChange={(e) => setCredentials({ ...credentials, password: e.target.value })} /></label>
           </>
         )}
